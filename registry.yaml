@@ -1,0 +1,71 @@
+schema_version: "1.0"
+
+agents:
+  smarts-trader:
+    type: single
+    display_name: "SMARTS Trader (Minimal)"
+    description: "Self-contained AI trading agent with Alpaca paper/live integration. Analyzes markets using RSI, MACD, and support/resistance, then executes bracket orders with risk management."
+    author: "Vybe / SMARTS Team"
+    version: "1.2.0"
+    template: "local:smarts-trader-minimal"
+    categories: [trading, finance]
+    credentials:
+      - name: ALPACA_API_KEY
+        description: "Alpaca Markets API key"
+        service: alpaca
+        required: true
+      - name: ALPACA_SECRET_KEY
+        description: "Alpaca Markets secret key"
+        service: alpaca
+        required: true
+    resources: { cpu: "2", memory: "4g" }
+
+  smarts-pipeline:
+    type: system
+    display_name: "SMARTS Trading Pipeline"
+    description: "8-agent trading system: market regime detection, news sentiment, opportunity discovery, deep analysis, decision making, execution, portfolio oversight, and performance feedback."
+    author: "Vybe / SMARTS Team"
+    version: "1.0.0"
+    template: "local:system"
+    categories: [trading, finance, pipeline]
+    agent_count: 8
+
+    # Agents use local: templates from Trinity's config/agent-templates/
+    agents:
+      - name: market-regime
+        template: "local:market-regime"
+      - name: news-sentiment
+        template: "local:news-sentiment"
+      - name: discovery
+        template: "local:discovery"
+      - name: analysis
+        template: "local:analysis"
+      - name: decision
+        template: "local:decision"
+      - name: execution
+        template: "local:execution"
+      - name: portfolio-manager
+        template: "local:portfolio-manager"
+      - name: feedback
+        template: "local:feedback"
+
+    credentials:
+      - name: ALPACA_API_KEY
+        description: "Alpaca Markets API key (get free paper keys at https://app.alpaca.markets)"
+        service: alpaca
+        required: true
+      - name: ALPACA_SECRET_KEY
+        description: "Alpaca Markets secret key"
+        service: alpaca
+        required: true
+
+    # Infrastructure the CLI auto-provisions (no external Supabase needed)
+    infrastructure:
+      local_database:
+        enabled: true
+        description: "Local PostgreSQL + PostgREST for inter-agent communication"
+        provides:
+          SUPABASE_URL: "http://smarts-api:3000"
+          SUPABASE_SERVICE_KEY: "auto-generated"
+
+    resources: { cpu: "2", memory: "4g" }

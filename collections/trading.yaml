@@ -1,0 +1,6 @@
+name: Trading & Finance
+description: Agents for market analysis, trading, and portfolio management.
+
+agents:
+  - smarts-trader
+  - smarts-pipeline
