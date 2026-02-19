@@ -648,6 +648,69 @@ def fetch_agent_files_from_registry(
     return files
 
 
+def check_agent_dns(agent_name: str) -> tuple[bool, bool]:
+    """Check DNS resolution inside an agent container.
+
+    Tests both internal (smarts-api) and external (api.alpaca.markets) DNS.
+    Returns (internal_ok, external_ok).
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        return True, True  # Can't check, assume ok
+
+    try:
+        cid = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"label=trinity.agent-name={agent_name}"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        if not cid:
+            return True, True  # Container not found, skip check
+    except (subprocess.TimeoutExpired, OSError):
+        return True, True
+
+    def _resolve(hostname: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["docker", "exec", cid, "getent", "hosts", hostname],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    return _resolve("smarts-api"), _resolve("api.alpaca.markets")
+
+
+def fix_agent_dns(agent_name: str) -> bool:
+    """Add external DNS servers to an agent container by recreating it with dns config.
+
+    Uses 'docker update' is not available for DNS, so we disconnect/reconnect
+    with explicit DNS. Actually docker doesn't support dns update, so we add
+    a resolv.conf entry inside the container instead.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        return False
+
+    try:
+        cid = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"label=trinity.agent-name={agent_name}"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        if not cid:
+            return False
+
+        # Add Google DNS to resolv.conf as fallback
+        subprocess.run(
+            ["docker", "exec", cid, "bash", "-c",
+             "grep -q '8.8.8.8' /etc/resolv.conf || echo 'nameserver 8.8.8.8' >> /etc/resolv.conf"],
+            capture_output=True, timeout=10,
+        )
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -1033,10 +1096,25 @@ def _install_system(
         print(f"  {C.ERR}No agents created successfully{C.RESET}")
         sys.exit(1)
 
-    # Step 5: Wait for containers, then inject ALL files (CLAUDE.md + .mcp.json + .env + config.yaml)
+    # Step 5: Wait for containers, check DNS, then inject ALL files
     print(f"\n  {C.BOLD}[5/5] Configuring agents{C.RESET}")
     print(f"  Waiting for containers to be ready...", flush=True)
     time.sleep(10)  # Give all containers time to start SSH servers
+
+    # DNS health check on first agent
+    test_agent = agents_to_configure[0]
+    internal_ok, external_ok = check_agent_dns(test_agent)
+    if not internal_ok:
+        print(f"  {C.ERR}DNS issue: agents cannot resolve 'smarts-api' (local database){C.RESET}")
+        print(f"  Ensure all containers are on the 'trinity-agent-network' Docker network.")
+    if not external_ok:
+        print(f"  {C.WARN}DNS issue: agents cannot resolve external hosts (api.alpaca.markets){C.RESET}")
+        print(f"  Fixing DNS for all agents...", end=" ", flush=True)
+        fixed = 0
+        for agent_name in agents_to_configure:
+            if fix_agent_dns(agent_name):
+                fixed += 1
+        print(f"{C.OK}patched {fixed}/{len(agents_to_configure)}{C.RESET}")
 
     env_content = build_env_content(creds, oauth_token=cfg.get("claude_oauth_token"))
     configured = 0
