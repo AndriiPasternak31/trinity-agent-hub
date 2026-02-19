@@ -898,7 +898,7 @@ def _install_system(
     trinity_dir = find_trinity_dir()
     agents_to_configure: list[tuple[str, str]] = []  # (agent_name, template)
 
-    for agent_def in agent_defs:
+    for i, agent_def in enumerate(agent_defs):
         agent_template_name = agent_def["name"]
         agent_name = f"smarts-{agent_template_name}"
         template = agent_def.get("template", f"local:{agent_template_name}")
@@ -915,14 +915,35 @@ def _install_system(
                 agents_to_configure.append((agent_name, template))
             else:
                 print(f"{C.ERR}failed{C.RESET}")
+        except requests.ConnectionError:
+            # Backend may be under load from building containers — wait and retry once
+            print("waiting...", end=" ", flush=True)
+            time.sleep(10)
+            try:
+                api.create_agent(agent_name, template)
+                print(f"{C.OK}created{C.RESET}")
+                agents_to_configure.append((agent_name, template))
+            except requests.HTTPError as e:
+                if e.response is not None and "already exists" in e.response.text.lower():
+                    print(f"{C.WARN}already exists{C.RESET}")
+                    agents_to_configure.append((agent_name, template))
+                else:
+                    print(f"{C.ERR}failed{C.RESET}")
+            except requests.RequestException:
+                print(f"{C.ERR}failed (connection error){C.RESET}")
+
+        # Pace creation to avoid overwhelming the backend
+        if i < len(agent_defs) - 1:
+            time.sleep(3)
 
     if not agents_to_configure:
         print(f"  {C.ERR}No agents created successfully{C.RESET}")
         sys.exit(1)
 
-    # Step 4: Wait for agents to be ready, then inject credentials
+    # Step 4: Wait for all containers to start, then inject credentials
     print(f"\n  {C.BOLD}[4/4] Configuring agents{C.RESET}")
     print(f"  Waiting for containers to be ready...", flush=True)
+    time.sleep(10)  # Give all containers time to start SSH servers
 
     env_content = build_env_content(creds)
     configured = 0
@@ -940,7 +961,7 @@ def _install_system(
 
         # Retry injection with backoff (agent SSH server may need time to start)
         injected = False
-        for attempt in range(12):
+        for attempt in range(15):
             try:
                 # Ensure agent is started
                 agent_info = api.get_agent(agent_name)
@@ -953,8 +974,8 @@ def _install_system(
                 api.inject_credentials(agent_name, files)
                 injected = True
                 break
-            except requests.HTTPError:
-                if attempt < 11:
+            except (requests.HTTPError, requests.ConnectionError):
+                if attempt < 14:
                     time.sleep(5)
                     print(".", end="", flush=True)
 
@@ -962,7 +983,7 @@ def _install_system(
             print(f" {C.OK}configured{C.RESET}")
             configured += 1
         else:
-            print(f" {C.ERR}failed (agent not ready after 60s){C.RESET}")
+            print(f" {C.ERR}failed (agent not ready after 75s){C.RESET}")
             failed += 1
 
     # Summary
