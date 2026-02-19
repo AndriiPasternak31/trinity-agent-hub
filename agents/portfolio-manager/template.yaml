@@ -1,0 +1,18 @@
+name: portfolio-manager
+display_name: "SMARTS Portfolio Manager"
+description: "Portfolio oversight with emergency intervention and risk triggers"
+version: "1.0.0"
+author: "SMARTS Trading System"
+
+type: trading-pipeline
+
+mcp_servers:
+  - name: supabase
+    command: npx
+    args: ["-y", "@supabase/mcp-server-postgrest@latest"]
+  - name: alpaca
+    command: uvx
+    args: ["alpaca-mcp-server", "serve"]
+  - name: massive
+    command: npx
+    args: ["-y", "@anthropic/massive-mcp"]

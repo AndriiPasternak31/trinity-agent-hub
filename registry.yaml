@@ -1,4 +1,9 @@
-schema_version: "1.0"
+schema_version: "1.1"
+
+# GitHub repository where agent templates are stored
+# CLI fetches CLAUDE.md, .mcp.json.template, config.yaml from here
+repository: "AndriiPasternak31/trinity-agent-hub"
+branch: "main"
 
 agents:
   smarts-trader:
@@ -7,7 +12,8 @@ agents:
     description: "Self-contained AI trading agent with Alpaca paper/live integration. Analyzes markets using RSI, MACD, and support/resistance, then executes bracket orders with risk management."
     author: "Vybe / SMARTS Team"
     version: "1.2.0"
-    template: "local:smarts-trader-minimal"
+    # No template — CLI creates bare agent and injects all files
+    agent_dir: "agents/smarts-trader-minimal"
     categories: [trading, finance]
     credentials:
       - name: ALPACA_API_KEY
@@ -25,29 +31,29 @@ agents:
     display_name: "SMARTS Trading Pipeline"
     description: "8-agent trading system: market regime detection, news sentiment, opportunity discovery, deep analysis, decision making, execution, portfolio oversight, and performance feedback."
     author: "Vybe / SMARTS Team"
-    version: "1.0.0"
-    template: "local:system"
+    version: "1.1.0"
     categories: [trading, finance, pipeline]
     agent_count: 8
 
-    # Agents use local: templates from Trinity's config/agent-templates/
+    # Agent templates are bundled in this repo under agents/
+    # CLI creates bare agents and injects CLAUDE.md + .mcp.json + .env
     agents:
       - name: market-regime
-        template: "local:market-regime"
+        agent_dir: "agents/market-regime"
       - name: news-sentiment
-        template: "local:news-sentiment"
+        agent_dir: "agents/news-sentiment"
       - name: discovery
-        template: "local:discovery"
+        agent_dir: "agents/discovery"
       - name: analysis
-        template: "local:analysis"
+        agent_dir: "agents/analysis"
       - name: decision
-        template: "local:decision"
+        agent_dir: "agents/decision"
       - name: execution
-        template: "local:execution"
+        agent_dir: "agents/execution"
       - name: portfolio-manager
-        template: "local:portfolio-manager"
+        agent_dir: "agents/portfolio-manager"
       - name: feedback
-        template: "local:feedback"
+        agent_dir: "agents/feedback"
 
     credentials:
       - name: ALPACA_API_KEY

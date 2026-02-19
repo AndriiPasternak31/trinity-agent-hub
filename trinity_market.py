@@ -49,7 +49,7 @@ except ImportError:
 
 CONFIG_DIR = Path.home() / ".trinity-market"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 DEFAULT_REGISTRY_URL = (
     "https://raw.githubusercontent.com/AndriiPasternak31/trinity-agent-hub/main/registry.yaml"
@@ -350,10 +350,13 @@ class TrinityAPI:
         except requests.RequestException:
             return False
 
-    def create_agent(self, name: str, template: str) -> dict[str, Any]:
+    def create_agent(self, name: str, template: str = "") -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": name}
+        if template:
+            payload["template"] = template
         r = self.session.post(
             f"{self.base_url}/api/agents",
-            json={"name": name, "template": template},
+            json=payload,
             timeout=60,
         )
         r.raise_for_status()
@@ -601,6 +604,50 @@ def fetch_mcp_template_from_dir(trinity_dir: Path, agent_template: str) -> str |
     return None
 
 
+def fetch_agent_files_from_registry(
+    registry: dict[str, Any], agent_dir: str, cfg: dict[str, Any],
+) -> dict[str, str]:
+    """Fetch agent template files (CLAUDE.md, .mcp.json.template, config.yaml) from GitHub.
+
+    Returns a dict of {filename: content} for files that exist in the agent_dir.
+    Uses the registry's 'repository' and 'branch' fields to build raw GitHub URLs,
+    or falls back to local files if the registry_url points to a local path.
+    """
+    files: dict[str, str] = {}
+    filenames = ["CLAUDE.md", ".mcp.json.template", "config.yaml"]
+
+    registry_url = cfg.get("registry_url", DEFAULT_REGISTRY_URL)
+
+    # If using a local registry file, resolve agent_dir relative to it
+    if registry_url.startswith("/") or registry_url.startswith("./"):
+        registry_path = Path(registry_url)
+        base_dir = registry_path.parent
+        for fname in filenames:
+            fpath = base_dir / agent_dir / fname
+            if fpath.exists():
+                files[fname] = fpath.read_text()
+        return files
+
+    # Fetch from GitHub raw URLs
+    repo = registry.get("repository", "AndriiPasternak31/trinity-agent-hub")
+    branch = registry.get("branch", "main")
+    gh_token = cfg.get("github_token")
+    headers: dict[str, str] = {}
+    if gh_token:
+        headers["Authorization"] = f"token {gh_token}"
+
+    for fname in filenames:
+        url = f"https://raw.githubusercontent.com/{repo}/{branch}/{agent_dir}/{fname}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                files[fname] = resp.text
+        except requests.RequestException:
+            pass
+
+    return files
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -811,14 +858,14 @@ def cmd_install(args: argparse.Namespace) -> None:
     version = entry.get("version", "?")
 
     if agent_type == "system":
-        _install_system(args, cfg, entry, api, display, version)
+        _install_system(args, cfg, registry, entry, api, display, version)
     else:
-        _install_single(args, cfg, entry, api, display, version)
+        _install_single(args, cfg, registry, entry, api, display, version)
 
 
 def _install_single(
-    args: argparse.Namespace, cfg: dict[str, Any], entry: dict[str, Any],
-    api: TrinityAPI, display: str, version: str,
+    args: argparse.Namespace, cfg: dict[str, Any], registry: dict[str, Any],
+    entry: dict[str, Any], api: TrinityAPI, display: str, version: str,
 ) -> None:
     print(f"\n  Installing {C.BOLD}{display}{C.RESET} v{version}...\n")
 
@@ -834,12 +881,10 @@ def _install_single(
     else:
         agent_name = default_name
 
-    template = entry.get("template", "")
-
-    # Create agent
+    # Create bare agent (no template — CLI injects everything)
     print(f"\n  Creating agent '{agent_name}'...", end=" ", flush=True)
     try:
-        api.create_agent(agent_name, template)
+        api.create_agent(agent_name)
         print(f"{C.OK}done{C.RESET}")
     except requests.HTTPError as e:
         if e.response is not None and "already exists" in e.response.text.lower():
@@ -850,19 +895,29 @@ def _install_single(
 
     _wait_for_agent(api, agent_name)
 
-    # Build credential files
+    # Fetch agent template files from registry repo
+    agent_dir = entry.get("agent_dir", "")
+    agent_files = fetch_agent_files_from_registry(registry, agent_dir, cfg) if agent_dir else {}
+
+    # Build credential files to inject
     env_content = build_env_content(creds, oauth_token=cfg.get("claude_oauth_token"))
     files: dict[str, str] = {".env": env_content}
 
-    # Try to get .mcp.json.template from local Trinity directory
-    trinity_dir = find_trinity_dir()
-    if trinity_dir:
-        mcp_template = fetch_mcp_template_from_dir(trinity_dir, template)
-        if mcp_template:
-            files[".mcp.json"] = substitute_template(mcp_template, creds)
+    # Generate .mcp.json from template
+    mcp_template = agent_files.get(".mcp.json.template")
+    if mcp_template:
+        files[".mcp.json"] = substitute_template(mcp_template, creds)
+
+    # Include CLAUDE.md (the agent's brain)
+    if "CLAUDE.md" in agent_files:
+        files["CLAUDE.md"] = agent_files["CLAUDE.md"]
+
+    # Include config.yaml (agent settings)
+    if "config.yaml" in agent_files:
+        files["config.yaml"] = agent_files["config.yaml"]
 
     # Inject & start
-    print(f"  Injecting credentials...", end=" ", flush=True)
+    print(f"  Injecting credentials + agent files...", end=" ", flush=True)
     try:
         api.inject_credentials(agent_name, files)
         print(f"{C.OK}done{C.RESET}")
@@ -880,8 +935,8 @@ def _install_single(
 
 
 def _install_system(
-    args: argparse.Namespace, cfg: dict[str, Any], entry: dict[str, Any],
-    api: TrinityAPI, display: str, version: str,
+    args: argparse.Namespace, cfg: dict[str, Any], registry: dict[str, Any],
+    entry: dict[str, Any], api: TrinityAPI, display: str, version: str,
 ) -> None:
     agent_count = entry.get("agent_count", "?")
     print(f"\n  Installing {C.BOLD}{display}{C.RESET} v{version} ({agent_count} agents)...\n")
@@ -891,7 +946,7 @@ def _install_system(
     db_creds: dict[str, str] = {}
 
     if infra.get("local_database", {}).get("enabled"):
-        print(f"  {C.BOLD}[1/4] Setting up local database{C.RESET}")
+        print(f"  {C.BOLD}[1/5] Setting up local database{C.RESET}")
         trinity_dir = find_trinity_dir()
         if setup_local_database(trinity_dir):
             db_creds["SUPABASE_URL"] = LOCAL_DB_URL
@@ -901,42 +956,56 @@ def _install_system(
             print(f"  {C.ERR}Database setup failed. Cannot continue.{C.RESET}")
             sys.exit(1)
     else:
-        print(f"  {C.BOLD}[1/4] No infrastructure needed{C.RESET}")
+        print(f"  {C.BOLD}[1/5] No infrastructure needed{C.RESET}")
 
     # Step 2: Collect credentials (only user-provided ones — DB creds are auto-set)
-    print(f"\n  {C.BOLD}[2/4] Collecting credentials{C.RESET}")
+    print(f"\n  {C.BOLD}[2/5] Collecting credentials{C.RESET}")
     cred_defs = entry.get("credentials", [])
     creds = collect_credentials(cred_defs, env_file=args.env_file, set_values=args.set)
 
     # Merge auto-provisioned credentials
     creds.update(db_creds)
 
-    # Step 3: Create all agents (containers start building in parallel)
-    print(f"\n  {C.BOLD}[3/4] Creating agents{C.RESET}")
-
+    # Step 3: Fetch agent template files from registry repo
+    print(f"\n  {C.BOLD}[3/5] Fetching agent templates{C.RESET}")
     agent_defs = entry.get("agents", [])
     if not agent_defs:
         print(f"  {C.ERR}No agents defined in registry entry{C.RESET}")
         sys.exit(1)
 
-    trinity_dir = find_trinity_dir()
-    agents_to_configure: list[tuple[str, str]] = []  # (agent_name, template)
+    # Pre-fetch all agent files from GitHub (or local registry)
+    agent_file_cache: dict[str, dict[str, str]] = {}
+    for agent_def in agent_defs:
+        agent_dir = agent_def.get("agent_dir", "")
+        agent_name_short = agent_def["name"]
+        if agent_dir:
+            print(f"  {agent_name_short}...", end=" ", flush=True)
+            fetched = fetch_agent_files_from_registry(registry, agent_dir, cfg)
+            agent_file_cache[agent_name_short] = fetched
+            file_list = ", ".join(sorted(fetched.keys())) if fetched else "none"
+            print(f"{C.OK}{file_list}{C.RESET}")
+        else:
+            agent_file_cache[agent_name_short] = {}
+
+    # Step 4: Create all agents as bare containers (no template dependency)
+    print(f"\n  {C.BOLD}[4/5] Creating agents{C.RESET}")
+
+    agents_to_configure: list[str] = []  # agent_name
 
     for i, agent_def in enumerate(agent_defs):
         agent_template_name = agent_def["name"]
         agent_name = f"smarts-{agent_template_name}"
-        template = agent_def.get("template", f"local:{agent_template_name}")
 
         print(f"  {agent_name}...", end=" ", flush=True)
 
         try:
-            api.create_agent(agent_name, template)
+            api.create_agent(agent_name)  # bare agent — no template
             print(f"{C.OK}created{C.RESET}")
-            agents_to_configure.append((agent_name, template))
+            agents_to_configure.append(agent_name)
         except requests.HTTPError as e:
             if e.response is not None and "already exists" in e.response.text.lower():
                 print(f"{C.WARN}already exists{C.RESET}")
-                agents_to_configure.append((agent_name, template))
+                agents_to_configure.append(agent_name)
             else:
                 print(f"{C.ERR}failed{C.RESET}")
         except requests.ConnectionError:
@@ -944,13 +1013,13 @@ def _install_system(
             print("waiting...", end=" ", flush=True)
             time.sleep(10)
             try:
-                api.create_agent(agent_name, template)
+                api.create_agent(agent_name)
                 print(f"{C.OK}created{C.RESET}")
-                agents_to_configure.append((agent_name, template))
+                agents_to_configure.append(agent_name)
             except requests.HTTPError as e:
                 if e.response is not None and "already exists" in e.response.text.lower():
                     print(f"{C.WARN}already exists{C.RESET}")
-                    agents_to_configure.append((agent_name, template))
+                    agents_to_configure.append(agent_name)
                 else:
                     print(f"{C.ERR}failed{C.RESET}")
             except requests.RequestException:
@@ -964,8 +1033,8 @@ def _install_system(
         print(f"  {C.ERR}No agents created successfully{C.RESET}")
         sys.exit(1)
 
-    # Step 4: Wait for all containers to start, then inject credentials
-    print(f"\n  {C.BOLD}[4/4] Configuring agents{C.RESET}")
+    # Step 5: Wait for containers, then inject ALL files (CLAUDE.md + .mcp.json + .env + config.yaml)
+    print(f"\n  {C.BOLD}[5/5] Configuring agents{C.RESET}")
     print(f"  Waiting for containers to be ready...", flush=True)
     time.sleep(10)  # Give all containers time to start SSH servers
 
@@ -973,15 +1042,28 @@ def _install_system(
     configured = 0
     failed = 0
 
-    for agent_name, template in agents_to_configure:
+    for agent_name in agents_to_configure:
         print(f"  {agent_name}...", end=" ", flush=True)
 
-        # Build credential files
+        # Derive the short name (smarts-market-regime → market-regime)
+        short_name = agent_name.replace("smarts-", "", 1)
+        agent_files = agent_file_cache.get(short_name, {})
+
+        # Build files to inject
         files: dict[str, str] = {".env": env_content}
-        if trinity_dir:
-            mcp_template = fetch_mcp_template_from_dir(trinity_dir, template)
-            if mcp_template:
-                files[".mcp.json"] = substitute_template(mcp_template, creds)
+
+        # Generate .mcp.json from template + credentials
+        mcp_template = agent_files.get(".mcp.json.template")
+        if mcp_template:
+            files[".mcp.json"] = substitute_template(mcp_template, creds)
+
+        # Inject CLAUDE.md (the agent's brain)
+        if "CLAUDE.md" in agent_files:
+            files["CLAUDE.md"] = agent_files["CLAUDE.md"]
+
+        # Inject config.yaml (agent settings)
+        if "config.yaml" in agent_files:
+            files["config.yaml"] = agent_files["config.yaml"]
 
         # Retry injection with backoff (agent SSH server may need time to start)
         injected = False

@@ -1,0 +1,18 @@
+name: analysis
+display_name: "SMARTS Deep Analysis Agent"
+description: "Provides comprehensive analysis of opportunities with scenario modeling"
+version: "1.0.0"
+author: "SMARTS Trading System"
+
+type: trading-pipeline
+
+mcp_servers:
+  - name: supabase
+    command: npx
+    args: ["-y", "@supabase/mcp-server-postgrest@latest"]
+  - name: alpaca
+    command: uvx
+    args: ["alpaca-mcp-server", "serve"]
+  - name: massive
+    command: npx
+    args: ["-y", "@anthropic/massive-mcp"]

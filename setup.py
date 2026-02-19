@@ -4,7 +4,7 @@ from setuptools import setup
 
 setup(
     name="trinity-market",
-    version="0.3.0",
+    version="0.4.0",
     description="CLI tool for installing agents from the Trinity marketplace",
     author="Vybe",
     py_modules=["trinity_market"],
