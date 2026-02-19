@@ -49,7 +49,7 @@ except ImportError:
 
 CONFIG_DIR = Path.home() / ".trinity-market"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 DEFAULT_REGISTRY_URL = (
     "https://raw.githubusercontent.com/AndriiPasternak31/trinity-agent-hub/main/registry.yaml"
@@ -567,8 +567,14 @@ def collect_credentials(
     return creds
 
 
-def build_env_content(creds: dict[str, str]) -> str:
-    return "\n".join(f"{k}={v}" for k, v in creds.items()) + "\n"
+def build_env_content(creds: dict[str, str], oauth_token: str | None = None) -> str:
+    lines = [f"{k}={v}" for k, v in creds.items()]
+    if oauth_token:
+        # Override API key auth with subscription auth
+        # Empty ANTHROPIC_API_KEY forces Claude Code to use OAuth token
+        lines.append("ANTHROPIC_API_KEY=")
+        lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={oauth_token}")
+    return "\n".join(lines) + "\n"
 
 
 def substitute_template(template: str, creds: dict[str, str]) -> str:
@@ -630,6 +636,24 @@ def cmd_configure(args: argparse.Namespace) -> None:
         elif not cfg.get("admin_password"):
             print(f"{C.ERR}Admin password is required{C.RESET}")
             return
+
+    # Claude Code auth for agents (subscription vs API key)
+    print(f"\n  Claude Code auth for deployed agents:")
+    print(f"  1. Platform API key (agents use Trinity's Anthropic API key)")
+    print(f"  2. OAuth token (agents use your Claude subscription - Max/Pro)")
+    existing_oauth = "configured" if cfg.get("claude_oauth_token") else "none"
+    cc_choice = input(f"  Choice [1] (current: {existing_oauth}): ").strip() or "1"
+
+    if cc_choice == "2":
+        print(f"  Paste your Claude Code OAuth token (sk-ant-oat01-...).")
+        print(f"  Get it from: security find-generic-password -s 'Claude Code-credentials' -w")
+        token = getpass.getpass(f"  OAuth token: ").strip()
+        if token:
+            cfg["claude_oauth_token"] = token
+        elif not cfg.get("claude_oauth_token"):
+            print(f"{C.WARN}No token set — agents will use platform API key{C.RESET}")
+    else:
+        cfg.pop("claude_oauth_token", None)
 
     registry = input(
         f"  Registry URL [{cfg.get('registry_url', DEFAULT_REGISTRY_URL)}]: "
@@ -827,7 +851,7 @@ def _install_single(
     _wait_for_agent(api, agent_name)
 
     # Build credential files
-    env_content = build_env_content(creds)
+    env_content = build_env_content(creds, oauth_token=cfg.get("claude_oauth_token"))
     files: dict[str, str] = {".env": env_content}
 
     # Try to get .mcp.json.template from local Trinity directory
@@ -945,7 +969,7 @@ def _install_system(
     print(f"  Waiting for containers to be ready...", flush=True)
     time.sleep(10)  # Give all containers time to start SSH servers
 
-    env_content = build_env_content(creds)
+    env_content = build_env_content(creds, oauth_token=cfg.get("claude_oauth_token"))
     configured = 0
     failed = 0
 
